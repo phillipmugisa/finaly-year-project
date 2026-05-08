@@ -1,0 +1,99 @@
+data:
+  excel_path: "data/Mobicap_Paved_Network_Combined.xlsx"
+  images_root: "data/images"          # root folder; subfolders per year/road allowed
+  dataset_csv: "outputs/dataset.csv"  # built by prepare_data.py
+  image_size: 224
+  # GPS matching: max distance (km) to assign an image to a segment centroid
+  max_match_dist_km: 0.6
+
+  # Defects with clean 1-5 grade labels that are visible in pavement images
+  # Potholes excluded here because their column is a raw count, not a grade
+  visible_defects:
+    - name: "all_cracking"
+      col: "Cracksall"
+      weight: 7.0
+    - name: "wide_cracking"
+      col: "Crackswide"
+      weight: 10.0
+    - name: "ravelling"
+      col: "Ravelling/Disintegration"
+      weight: 5.0
+    - name: "bleeding"
+      col: "Bleeding"
+      weight: 2.5
+    - name: "drainage_road"
+      col: "Drainage(onRoad)"
+      weight: 2.5
+
+  # Pothole column is a count; binned separately to grade 1-5 for classification
+  pothole_col: "NrofPotholes/Failures"
+  pothole_weight: 7.5
+  pothole_bins: [0, 1, 3, 6, 11]    # edges; 0→grade1, 1-2→2, 3-5→3, 6-10→4, >10→5
+
+  # Total weight of all visual defects used for vVCI normalisation
+  # sum of visible_defects weights + pothole_weight = 34.5
+  total_visual_weight: 34.5
+
+  split:
+    train: 0.70
+    val:   0.15
+    test:  0.15
+    # Use temporal split if multiple survey years exist for the same road
+    temporal: true
+    # Column name that holds survey year (parsed from gps1date or survey date)
+    year_col: "survey_year"
+
+augmentation:
+  train:
+    random_horizontal_flip: 0.5
+    random_vertical_flip:   0.0
+    color_jitter:
+      brightness: 0.3
+      contrast:   0.3
+      saturation: 0.2
+      hue:        0.05
+    random_rotation: 5
+    random_crop_scale: [0.85, 1.0]
+  val:
+    resize_only: true
+
+model:
+  backbone: "efficientnet_b3"        # timm model name
+  pretrained: true
+  freeze_backbone_epochs: 10         # stage 1: heads only
+  unfreeze_top_blocks: 3             # stage 2: unfreeze last N backbone blocks
+  dropout: 0.3
+
+  # Classification head: one output per visible defect (grades 1-5)
+  n_defect_classes: 5
+  n_defects: 6                       # 5 grade-based + potholes
+
+  # Regression head: predicts normalised vVCI (0-100 scale)
+  vvci_head_hidden: 256
+
+training:
+  epochs: 40
+  batch_size: 32
+  num_workers: 4
+  seed: 42
+
+  optimizer:
+    type: "AdamW"
+    lr: 1.0e-3
+    weight_decay: 1.0e-4
+
+  scheduler:
+    type: "CosineAnnealingLR"
+    T_max: 40
+    eta_min: 1.0e-6
+
+  # Loss weights for combined objective
+  loss:
+    lambda_vvci: 1.0        # vVCI regression (MSE)
+    lambda_defect: 0.5      # per-defect classification (cross-entropy, summed)
+
+  # Stage 2 starts after freeze_backbone_epochs; lr is reduced for backbone
+  finetune_backbone_lr_factor: 0.1
+
+  checkpoint_dir: "outputs/checkpoints"
+  best_metric: "val_mae_vvci"        # lower is better

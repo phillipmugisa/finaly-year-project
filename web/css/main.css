@@ -1,0 +1,159 @@
+/* main.css — VCI Estimator Web App */
+
+/* Tab buttons */
+.tab-btn {
+  background: white;
+  color: #4b5563;
+  border-color: #d1d5db;
+}
+.tab-btn.active {
+  background: #14532d;
+  color: white;
+  border-color: #14532d;
+}
+
+/* Upload / Camera mode toggle */
+.mode-btn {
+  background: transparent;
+  color: #6b7280;
+}
+.mode-btn.active {
+  background: white;
+  color: #111827;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+}
+
+/* Condition colour bands */
+.cond-good        { background: #d1fae5; color: #065f46; }
+.cond-satisfactory{ background: #dcfce7; color: #166534; }
+.cond-fair        { background: #fef9c3; color: #854d0e; }
+.cond-poor        { background: #fed7aa; color: #9a3412; }
+.cond-verypoor    { background: #fecaca; color: #991b1b; }
+.cond-serious     { background: #fca5a5; color: #7f1d1d; }
+.cond-failed      { background: #ef4444; color: white;   }
+
+/* vVCI-specific labels (different scale: Good >80, Fair 60-80, Poor 40-60, Bad <40) */
+.cond-vvci-good   { background: #d1fae5; color: #065f46; }
+.cond-vvci-fair   { background: #fef9c3; color: #854d0e; }
+.cond-vvci-poor   { background: #fed7aa; color: #9a3412; }
+.cond-vvci-bad    { background: #fecaca; color: #991b1b; }
+
+/* General bad alias (same level as failed) */
+.cond-bad         { background: #ef4444; color: white; }
+
+/* Defect grade bars */
+.defect-bar-bg   { background: #f3f4f6; border-radius: 4px; height: 8px; }
+.defect-bar-fill { height: 8px; border-radius: 4px; transition: width 0.4s; }
+
+/* Grade colours: 1=green, 2=lime, 3=yellow, 4=orange, 5=red */
+.grade-1 { background: #22c55e; }
+.grade-2 { background: #84cc16; }
+.grade-3 { background: #eab308; }
+.grade-4 { background: #f97316; }
+.grade-5 { background: #ef4444; }
+
+/* Thumbnail images */
+.thumb {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 2px solid #e5e7eb;
+}
+
+/* Leaflet popup tweak */
+.leaflet-popup-content {
+  font-size: 12px;
+  min-width: 160px;
+}
+
+/* Map toolbar buttons (Expand / New window) */
+.map-toolbar-btn {
+  font-size: 11px;
+  color: #6b7280;
+  padding: 3px 9px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: white;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.map-toolbar-btn:hover {
+  background: #f3f4f6;
+  color: #374151;
+  border-color: #d1d5db;
+}
+
+/* Fullscreen overlay */
+.map-fullscreen {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 9999 !important;
+  border-radius: 0 !important;
+}
+
+/* Exit button injected into the fullscreen map */
+.map-exit-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10000;
+  background: white;
+  border: 1px solid #d1d5db;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+}
+
+/* Spinner */
+@keyframes spin { to { transform: rotate(360deg); } }
+.animate-spin   { animation: spin 0.8s linear infinite; }
+
+/* Camera tab */
+#cam-video {
+  display: block;
+  width: 100%;
+  max-height: 300px;
+  object-fit: cover;
+  border-radius: 12px;
+  background: #000;
+}
+#cam-captured-preview {
+  display: block;
+  width: 100%;
+  border-radius: 12px;
+  border: 2px solid #e5e7eb;
+}
+.cam-header-badge {
+  font-family: monospace;
+  font-size: 11px;
+  background: #003087;
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+/* Remove button overlay on camera thumbnails */
+.cam-thumb-remove {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 18px;
+  height: 18px;
+  background: #ef4444;
+  color: white;
+  border: none;
+  border-radius: 50%;
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+  cursor: pointer;
+  padding: 0;
+}
