@@ -19,14 +19,18 @@ const VIZ_PHASES = [
   {
     n: 2, title: "Model Development", status: "in-progress", color: "blue",
     icon: "🧠",
-    desc: "EfficientNet-B3 + defect classification head + vVCI/PCI regression heads. Feature extraction running; Colab training on T4 GPU is next.",
+    desc: "EfficientNet-B3 + deeper defect head + vVCI/PCI heads. 132k features extracted; CPU training done (MAE 16.6); Colab PCI pre-training on RDD2022 is next.",
     tasks: [
       { text: "Multi-task architecture (6 defect heads + vVCI + PCI) + HeadsModel for Colab", done: true },
       { text: "Two-stage trainer: freeze backbone → unfreeze top 3 blocks", done: true },
-      { text: "Combined Huber + weighted CE loss", done: true },
+      { text: "Deeper DefectHead: shared 1536→256 bottleneck + BN + ReLU before per-defect classifiers", done: true },
+      { text: "Analytical vVCI consistency loss: aligns vVCI head with MoWT formula via soft grades", done: true },
+      { text: "Segment-level feature aggregation: mean-pool images per 1km segment to align with labels", done: true },
+      { text: "Random 70/15/15 resplit by segment — 408 training segments, defect acc 44.6%", done: true },
+      { text: "Feature extraction: 132,544 images → features.npz (~400 MB)", done: true },
+      { text: "CPU baseline training: test MAE 16.6 vVCI points, defect acc 44.6%", done: true },
       { text: "Model export: TorchScript + ONNX + metadata JSON", done: true },
-      { text: "Feature extraction: 132k images → features.npz (~400 MB) — running", done: false },
-      { text: "Colab training: HeadsModel on Uganda features + RDD2022 PCI pre-training", done: false },
+      { text: "Colab training: HeadsModel on Uganda features + RDD2022 PCI pre-training (pending)", done: false },
     ]
   },
   {
@@ -104,11 +108,11 @@ const BB_BLOCKS = [
 
 const HEADS_DATA = [
   {
-    id: "defect", label: "Defect Head", sub: "6 × Linear(1536→5)",
+    id: "defect", label: "Defect Head", sub: "Bottleneck + 6 × Linear(256→5)",
     color: "#f97316", bg: "#fff7ed", border: "#fed7aa",
-    desc: "Six independent classifiers — one per visible defect. No shared weights between defects. Predicts grade logits for grades 1–5 (stored as 0–4 internally, +1 for display).",
-    params: 46116,
-    layers: ["Dropout(0.3)", "Linear(1536 → 5)", "× 6 defects"],
+    desc: "Shared 1536→256 bottleneck (BatchNorm + ReLU) followed by six independent classifiers, one per visible defect. The shared layer lets correlated defects (e.g. cracking + ravelling) build a common representation before branching. Predicts grade logits 1–5 (stored 0–4 internally).",
+    params: 401694,
+    layers: ["Dropout(0.3)", "Linear(1536 → 256)", "BatchNorm1d + ReLU", "── per defect ──", "Dropout(0.15)", "Linear(256 → 5)", "× 6 defects"],
     output: "6 × (B, 5) logits",
     outputs: ["All Cracking","Wide Cracking","Ravelling","Bleeding","Drainage","Potholes"],
   },
