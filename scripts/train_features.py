@@ -130,6 +130,36 @@ def _aggregate_segments(
     )
 
 
+def _resplit_by_segment(
+    df: pd.DataFrame,
+    train_frac: float = 0.70,
+    val_frac:   float = 0.15,
+    seed:       int   = 42,
+) -> pd.DataFrame:
+    """
+    Replace the temporal split in df with a random 70/15/15 split at the
+    segment level.  All images belonging to the same segment stay together
+    to prevent data leakage between splits.
+    """
+    rng         = np.random.default_rng(seed)
+    group_cols  = ["road_code", "segment_start", "segment_end", "survey_year"]
+    segments    = df[group_cols].drop_duplicates().reset_index(drop=True)
+    n           = len(segments)
+    order       = rng.permutation(n)
+
+    n_train = int(n * train_frac)
+    n_val   = int(n * val_frac)
+
+    labels          = np.empty(n, dtype=object)
+    labels[order[:n_train]]              = "train"
+    labels[order[n_train:n_train+n_val]] = "val"
+    labels[order[n_train+n_val:]]        = "test"
+
+    segments["split"] = labels
+    df = df.drop(columns=["split"]).merge(segments, on=group_cols, how="left")
+    return df
+
+
 def make_feature_loaders(
     features_path: str,
     dataset_csv:   str,
@@ -137,14 +167,14 @@ def make_feature_loaders(
     num_workers:   int  = 2,
     seed:          int  = 42,
     segment_level: bool = True,
+    resplit:       bool = False,
 ) -> dict[str, DataLoader]:
     """
     Build train/val/test DataLoaders from pre-extracted features.
 
     segment_level=True  (default): mean-pool image features per 1km segment.
-                                   One sample per segment — labels and inputs
-                                   are properly aligned.
-    segment_level=False           : one sample per image (original behaviour).
+    resplit=True                  : ignore the temporal split in dataset.csv
+                                    and reassign segments randomly 70/15/15.
     """
     print(f"Loading features: {features_path} …")
     npz   = np.load(features_path, allow_pickle=True)
@@ -158,8 +188,14 @@ def make_feature_loaders(
     df = pd.read_csv(dataset_csv)
     df = df.dropna(subset=_DEFECT_COLS + ["vvci"])
 
+    if resplit:
+        df = _resplit_by_segment(df, seed=seed)
+        print("  Split: random 70/15/15 by segment (temporal split overridden)")
+    else:
+        print("  Split: temporal (from dataset.csv)")
+
     mode = "segment-level" if segment_level else "per-image"
-    print(f"  Aggregation mode: {mode}")
+    print(f"  Aggregation: {mode}")
 
     loaders = {}
     for split in ("train", "val", "test"):
@@ -268,11 +304,13 @@ def main():
                         help="Path to pre-trained PCI head weights (pci_head.pt)")
     parser.add_argument("--device",          default=None)
     parser.add_argument("--seed",            type=int,   default=42)
-    parser.add_argument("--segment-level",   action="store_true",  default=True,
+    parser.add_argument("--segment-level",    action="store_true",  default=True,
                         help="Mean-pool image features per 1km segment (default: on)")
     parser.add_argument("--no-segment-level", dest="segment_level",
                         action="store_false",
                         help="Train on individual images instead of segments")
+    parser.add_argument("--resplit",          action="store_true",  default=False,
+                        help="Override temporal split with random 70/15/15 by segment")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -289,6 +327,7 @@ def main():
     loaders = make_feature_loaders(
         args.features, args.dataset, args.batch_size, args.num_workers, args.seed,
         segment_level=args.segment_level,
+        resplit=args.resplit,
     )
 
     # ── Model ─────────────────────────────────────────────────────────────────
