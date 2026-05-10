@@ -176,6 +176,7 @@ def predict(img_tensors: list) -> dict:
                 "name":            name,
                 "predicted_grade": grade_idx + 1,  # 0-4 → 1-5
                 "confidence":      round(confidence, 4),
+                "grade_probs":     [round(float(p), 4) for p in probs.tolist()],
             })
 
         # ── PCI: use trained head if value is in range, else formula ──────

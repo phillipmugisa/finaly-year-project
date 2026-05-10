@@ -6,6 +6,7 @@ let _selectedFiles = [];
 let _sessionRows   = [];
 let _lastResult    = null;
 let _inputMode     = "upload";   // "upload" | "camera"
+let _defectChart   = null;       // Chart.js radar instance
 
 // ── Tab switch ──────────────────────────────────────────────────────────────
 
@@ -188,27 +189,120 @@ function renderResults(r) {
     document.getElementById("gps-row").classList.add("hidden");
   }
 
-  // Defects
-  const list = document.getElementById("defect-list");
-  list.innerHTML = "";
-  (r.defects || []).forEach(d => {
-    const pct = ((d.predicted_grade - 1) / 4) * 100;
-    list.innerHTML += `
-      <div class="flex items-center gap-2">
-        <span class="w-32 text-xs text-gray-600 truncate">${formatDefectName(d.name)}</span>
-        <div class="flex-1 defect-bar-bg">
-          <div class="defect-bar-fill grade-${d.predicted_grade}" style="width:${pct}%"></div>
-        </div>
-        <span class="text-xs font-semibold w-10 text-right text-gray-700">
-          ${d.predicted_grade}/5
-        </span>
-        <span class="text-xs text-gray-400 w-12 text-right">${(d.confidence * 100).toFixed(0)}%</span>
-      </div>`;
-  });
+  // Defects — probability bars + radar chart
+  const defects = r.defects || [];
+  renderDefectList(defects);
+  renderDefectRadar(defects);
 
   if (!r.model_ready) {
-    list.innerHTML = `<p class="text-yellow-600 text-xs">Model not loaded — train first, then restart the API.</p>`;
+    document.getElementById("defect-list").innerHTML =
+      `<p class="text-yellow-600 text-xs">Model not loaded — train first, then restart the API.</p>`;
   }
+}
+
+const _GRADE_LABELS  = ["", "None", "Slight", "Moderate", "Severe", "V.Severe"];
+const _GRADE_COLOURS = ["", "#22c55e", "#84cc16", "#eab308", "#f97316", "#ef4444"];
+const _GRADE_BG      = ["", "#dcfce7", "#f7fee7", "#fef9c3", "#ffedd5", "#fee2e2"];
+
+function renderDefectList(defects) {
+  const list = document.getElementById("defect-list");
+  list.innerHTML = "";
+  defects.forEach(d => {
+    const g     = d.predicted_grade;
+    const probs = d.grade_probs || [];
+    const conf  = (d.confidence * 100).toFixed(0);
+
+    // Probability mini-bars (grades 1–5)
+    const miniBarHtml = probs.map((p, i) => {
+      const grade  = i + 1;
+      const height = Math.max(4, Math.round(p * 44));
+      const active = grade === g;
+      const col    = active ? _GRADE_COLOURS[grade] : "#d1d5db";
+      return `
+        <div class="flex flex-col items-center gap-0.5" title="Grade ${grade}: ${(p*100).toFixed(1)}%">
+          <div style="width:12px;height:${height}px;background:${col};border-radius:2px 2px 0 0;transition:height .4s"></div>
+          <span style="font-size:9px;color:${active ? _GRADE_COLOURS[grade] : '#9ca3af'};font-weight:${active?'700':'400'}">${grade}</span>
+        </div>`;
+    }).join("");
+
+    list.innerHTML += `
+      <div class="rounded-xl border p-3" style="border-color:${_GRADE_COLOURS[g]}33;background:${_GRADE_BG[g]}">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-semibold text-gray-700">${formatDefectName(d.name)}</span>
+          <span class="text-xs px-2 py-0.5 rounded-full font-semibold"
+                style="background:${_GRADE_COLOURS[g]};color:white">
+            ${_GRADE_LABELS[g]} · ${g}/5
+          </span>
+        </div>
+        <div class="flex items-end gap-1 h-12 mb-1">
+          ${miniBarHtml}
+          <div class="ml-auto text-right">
+            <div class="text-xs text-gray-400">confidence</div>
+            <div class="text-lg font-bold" style="color:${_GRADE_COLOURS[g]}">${conf}%</div>
+          </div>
+        </div>
+      </div>`;
+  });
+}
+
+function renderDefectRadar(defects) {
+  const ctx = document.getElementById("defect-radar");
+  if (!ctx || !defects.length) return;
+
+  const labels = defects.map(d => formatDefectName(d.name));
+  const grades = defects.map(d => d.predicted_grade);
+
+  // Colour gradient per grade level for fill
+  const avgGrade = grades.reduce((a, b) => a + b, 0) / grades.length;
+  const fillCol  = avgGrade <= 2 ? "rgba(34,197,94,0.25)"
+                 : avgGrade <= 3 ? "rgba(234,179,8,0.25)"
+                 : avgGrade <= 4 ? "rgba(249,115,22,0.25)"
+                 :                 "rgba(239,68,68,0.25)";
+  const lineCol  = avgGrade <= 2 ? "#22c55e"
+                 : avgGrade <= 3 ? "#eab308"
+                 : avgGrade <= 4 ? "#f97316"
+                 :                 "#ef4444";
+
+  if (_defectChart) { _defectChart.destroy(); _defectChart = null; }
+
+  _defectChart = new Chart(ctx, {
+    type: "radar",
+    data: {
+      labels,
+      datasets: [{
+        label: "Grade (1–5)",
+        data:  grades,
+        fill:  true,
+        backgroundColor: fillCol,
+        borderColor:     lineCol,
+        borderWidth:     2,
+        pointBackgroundColor: grades.map(g => _GRADE_COLOURS[g]),
+        pointRadius: 5,
+        pointHoverRadius: 7,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        r: {
+          min: 0, max: 5,
+          ticks: { stepSize: 1, font: { size: 9 },
+                   callback: v => v === 0 ? "" : _GRADE_LABELS[v] || v },
+          pointLabels: { font: { size: 10, weight: "600" } },
+          grid:  { color: "rgba(0,0,0,0.06)" },
+        },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` Grade ${ctx.raw} — ${_GRADE_LABELS[ctx.raw] || ""}`,
+          },
+        },
+      },
+    },
+  });
 }
 
 function formatDefectName(name) {
