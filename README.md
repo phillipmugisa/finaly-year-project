@@ -172,6 +172,38 @@ the pipeline finishes in ~30 min instead of hours.
 
 ---
 
+## Model architecture
+
+### Backbone
+**EfficientNet-B3** (pretrained ImageNet, from `timm`). Input: 224×224 RGB.
+Output: 1536-d feature vector via Global Average Pooling.
+
+### Task heads (1.19M trainable parameters)
+
+| Head | Architecture | Output |
+|------|-------------|--------|
+| **Defect** | Dropout → Linear(1536→256) → BN+ReLU → 6×[Dropout → Linear(256→5)] | 6 grade logits (1–5 per defect) |
+| **vVCI** | Dropout → Linear(1536→256) → BN+ReLU → Dropout → Linear(256→1) → Sigmoid×100 | Scalar [0, 100] |
+| **PCI** | Same as vVCI | Scalar [0, 100] |
+
+The DefectHead uses a **shared bottleneck** (1536→256) so correlated defects
+(cracking, ravelling) share a representation before branching.
+
+### Loss function (4 terms)
+
+```
+L = λ_vvci   × Huber(pred_vvci,  true_vvci)       [λ=1.0]
+  + λ_defect × Σ CrossEntropy(pred_grade_i, grade_i) [λ=0.5]
+  + λ_pci    × Huber(pred_pci,   formula_pci)       [λ=0.5]
+  + λ_consist× Huber(pred_vvci,  formula_vvci)      [λ=0.3]
+```
+
+**Consistency loss**: soft grade predictions (softmax × expected grade values)
+are passed through the MoWT vVCI formula and compared with the vVCI head output.
+This prevents the two heads from diverging during training.
+
+---
+
 ## Step 2 — Train the model
 
 There are two training paths depending on whether you have a GPU and access to
@@ -215,10 +247,19 @@ MyDrive/vci_estimator/
 
 **4. Open `colab_train.ipynb` in Google Colab** with a T4 GPU runtime and run
 all cells. The notebook will:
+- Visualize the dataset (vVCI distribution, split breakdown, defect distributions)
 - Download RDD2022 Japan from FigShare (~3 GB) for PCI head pre-training
 - Pre-train the PCI head on international road damage data
-- Train all three heads (Defect + vVCI + PCI) on Uganda features
+- Train all three heads (Defect + vVCI + PCI) on Uganda features with consistency loss
+- Generate training curves and post-training analysis plots
 - Save `best.pt` back to Google Drive
+
+**Key training flags used in the notebook:**
+```bash
+--resplit           # random 70/15/15 segment split (408 train vs 231 with temporal)
+--lambda-consist 0.3  # consistency loss weight
+--epochs 60         # more epochs on GPU since feature-based training is fast
+```
 
 **5. Download `best.pt`** from Drive to `outputs/checkpoints/best.pt`.
 
@@ -309,11 +350,31 @@ API endpoints:
 
 ## Model outputs
 
-| Output | Type | Range | Description |
-|--------|------|-------|-------------|
-| `vvci` | float | 0–100 | Visual VCI (image-observable defects only) |
-| `pci` | float | 0–100 | Pavement Condition Index (ASTM D6433 formula) |
-| `defect_logits` | 6×(B,5) | — | Grade logits per defect (argmax → grade 1–5) |
+The `/predict` endpoint returns:
+
+```json
+{
+  "model_ready": true,
+  "vvci": 74.3,
+  "vvci_label": "Fair",
+  "pci": 61.2,
+  "pci_label": "Satisfactory",
+  "defects": [
+    {
+      "name": "all_cracking",
+      "predicted_grade": 2,
+      "confidence": 0.74,
+      "grade_probs": [0.08, 0.74, 0.12, 0.04, 0.02]
+    }
+  ],
+  "gps_used": {"lat": 0.4457, "lon": 33.199, "source": "ocr"},
+  "road_matched": {"road_name": "A001N2", "km_start": 86.0, "km_end": 87.0},
+  "images_used": 3
+}
+```
+
+`grade_probs` is the full 5-class softmax distribution (grades 1–5), displayed
+as probability bars in the web app.
 
 **Visible defects modelled:**
 
@@ -343,11 +404,25 @@ The system auto-detects the source per image and applies the correct method.
 
 ---
 
-## Expected performance targets
+## Current performance (feature-based training, 755 segments)
 
-| Metric | Target |
-|--------|--------|
-| vVCI test MAE | < 8.0 |
-| vVCI test RMSE | < 12.0 |
-| Defect grade accuracy (mean) | > 0.65 |
-| Defect within-1 accuracy | > 0.90 |
+| Metric | Value |
+|--------|-------|
+| **Test MAE (vVCI)** | **16.6 points** (0–100 scale) |
+| **Test RMSE (vVCI)** | 19.7 points |
+| **Defect accuracy (mean)** | **44.6%** (5-class; random=20%) |
+| Best val MAE | 14.9 |
+
+Per-defect accuracy:
+
+| Defect | Exact acc | Within-1 acc |
+|--------|-----------|-------------|
+| Potholes / Failures | ~85% | ~95% |
+| Ravelling | ~39% | ~78% |
+| Bleeding | ~30% | ~72% |
+| Wide cracking | ~21% | ~65% |
+| All cracking | ~18% | ~62% |
+| Drainage on road | ~10% | ~58% |
+
+**Key limitation:** only 755 unique survey segments (Jinja + Hoima roads). More
+roads or end-to-end Colab training on raw images is expected to improve results.
