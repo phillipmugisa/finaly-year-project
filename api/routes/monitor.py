@@ -127,7 +127,7 @@ def _parse_pipeline_log(path: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 _TQDM_RE = re.compile(
-    r"(\d+)%\|.*?\|\s*(\d+)/(\d+)\s+\[[\d:]+<([\d:]+),\s*([\d.]+)(?:s/it|it/s)\]"
+    r"(\d+)%\|.*?\|\s*(\d+)/(\d+)\s+\[[\d:]+<([\d:]+),\s*([\d.]+)(?:s/it|it/s|s/batch|batch/s)\]"
 )
 
 
@@ -162,10 +162,19 @@ def _parse_feature_extraction(log_path: Path) -> dict:
         })
 
     running = _is_running("extract_features")
+    saved   = "Saved →" in text or "Features shape" in text
+
     if running:
         result["status"] = "running"
     elif last_m and int(last_m.group(1)) >= 100:
         result["status"] = "complete"
+    elif saved:
+        # Process finished cleanly — tqdm may not have printed a 100% line
+        result["status"] = "complete"
+        if last_m:
+            # Mark as 100% so the UI shows a full bar
+            result["pct"] = 100
+            result["batches_done"]  = result["batches_total"]
     elif text.strip():
         result["status"] = "stopped"
 
