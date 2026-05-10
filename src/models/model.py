@@ -50,24 +50,37 @@ N_GRADES  = 5   # grade classes 1-5 → 0-4
 
 class DefectHead(nn.Module):
     """
-    One linear classifier per defect type.
+    Shared bottleneck + one classifier per defect type.
     Input : feature vector of dimension `in_features`
     Output: list of N_DEFECTS logit tensors, each of shape (B, N_GRADES)
+
+    A shared hidden layer lets all defect classifiers share a common
+    representation before branching, which improves generalisation when
+    defect grades are correlated (e.g. ravelling and cracking co-occur).
     """
 
-    def __init__(self, in_features: int, n_defects: int = N_DEFECTS, n_grades: int = N_GRADES, dropout: float = 0.3):
+    def __init__(self, in_features: int, n_defects: int = N_DEFECTS,
+                 n_grades: int = N_GRADES, dropout: float = 0.3,
+                 hidden: int = 256):
         super().__init__()
+        self.shared = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(in_features, hidden),
+            nn.BatchNorm1d(hidden),
+            nn.ReLU(inplace=True),
+        )
         self.classifiers = nn.ModuleList([
             nn.Sequential(
-                nn.Dropout(dropout),
-                nn.Linear(in_features, n_grades),
+                nn.Dropout(dropout / 2),
+                nn.Linear(hidden, n_grades),
             )
             for _ in range(n_defects)
         ])
 
     def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Returns list of (B, N_GRADES) logit tensors."""
-        return [clf(x) for clf in self.classifiers]
+        shared = self.shared(x)
+        return [clf(shared) for clf in self.classifiers]
 
 
 # ---------------------------------------------------------------------------

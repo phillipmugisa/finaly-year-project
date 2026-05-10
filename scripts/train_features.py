@@ -53,23 +53,16 @@ _DEFECT_COLS = [
 _DEFECT_NAMES = ["all_cracking","wide_cracking","ravelling","bleeding","drainage_road","potholes"]
 
 
-# ── Dataset ───────────────────────────────────────────────────────────────────
+# ── Datasets ──────────────────────────────────────────────────────────────────
 
 class FeatureDataset(Dataset):
-    """
-    Loads pre-extracted 1536-d backbone features + labels from dataset.csv.
-    Much faster than loading images — fits entirely in RAM (~500 MB for 80k rows).
-    """
+    """Per-image dataset: one sample per row in dataset.csv."""
 
     def __init__(self, features: np.ndarray, df: pd.DataFrame):
-        """
-        features : (N, 1536) float16 array aligned with df rows
-        df       : subset of dataset.csv rows (already filtered + split)
-        """
-        self.features = torch.from_numpy(features.astype(np.float32))  # (N, 1536)
+        self.features = torch.from_numpy(features.astype(np.float32))
         self.vvci     = torch.tensor(df["vvci"].values,       dtype=torch.float32)
         self.grades   = torch.tensor(
-            df[_DEFECT_COLS].values - 1, dtype=torch.long   # 1-indexed → 0-indexed
+            df[_DEFECT_COLS].values - 1, dtype=torch.long
         )
 
     def __len__(self):
@@ -77,43 +70,111 @@ class FeatureDataset(Dataset):
 
     def __getitem__(self, idx):
         return {
-            "feature": self.features[idx],   # (1536,)
-            "vvci":    self.vvci[idx],        # scalar
-            "grades":  self.grades[idx],      # (6,)
+            "feature": self.features[idx],
+            "vvci":    self.vvci[idx],
+            "grades":  self.grades[idx],
         }
+
+
+class SegmentDataset(Dataset):
+    """
+    Segment-level dataset: features are mean-pooled across all images
+    belonging to the same 1km survey segment.
+
+    This matches how labels were collected — one vVCI + grade set per segment —
+    which eliminates label noise caused by repeating the same label for every
+    image in the segment.
+    """
+
+    def __init__(self, seg_features: np.ndarray, seg_vvci: np.ndarray,
+                 seg_grades: np.ndarray):
+        self.features = torch.from_numpy(seg_features.astype(np.float32))
+        self.vvci     = torch.tensor(seg_vvci, dtype=torch.float32)
+        self.grades   = torch.tensor(seg_grades - 1, dtype=torch.long)  # 1-idx → 0-idx
+
+    def __len__(self):
+        return len(self.vvci)
+
+    def __getitem__(self, idx):
+        return {
+            "feature": self.features[idx],
+            "vvci":    self.vvci[idx],
+            "grades":  self.grades[idx],
+        }
+
+
+def _aggregate_segments(
+    df: pd.DataFrame,
+    path_to_feat: dict,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Group df rows by segment, mean-pool their feature vectors.
+    Returns (seg_features, seg_vvci, seg_grades) arrays.
+    A segment is identified by (road_code, segment_start, segment_end, survey_year).
+    """
+    df = df[df["image_path"].isin(path_to_feat)].copy()
+
+    seg_feats, seg_vvcis, seg_grades_list = [], [], []
+    group_cols = ["road_code", "segment_start", "segment_end", "survey_year"]
+
+    for _, grp in df.groupby(group_cols, sort=False):
+        feat_matrix = np.stack([path_to_feat[p] for p in grp["image_path"]])
+        seg_feats.append(feat_matrix.mean(axis=0))        # mean pool (1536,)
+        seg_vvcis.append(grp["vvci"].iloc[0])
+        seg_grades_list.append(grp[_DEFECT_COLS].iloc[0].values)
+
+    return (
+        np.stack(seg_feats).astype(np.float32),
+        np.array(seg_vvcis, dtype=np.float32),
+        np.stack(seg_grades_list).astype(np.int64),
+    )
 
 
 def make_feature_loaders(
     features_path: str,
     dataset_csv:   str,
-    batch_size:    int = 256,
-    num_workers:   int = 2,
-    seed:          int = 42,
+    batch_size:    int  = 256,
+    num_workers:   int  = 2,
+    seed:          int  = 42,
+    segment_level: bool = True,
 ) -> dict[str, DataLoader]:
+    """
+    Build train/val/test DataLoaders from pre-extracted features.
 
+    segment_level=True  (default): mean-pool image features per 1km segment.
+                                   One sample per segment — labels and inputs
+                                   are properly aligned.
+    segment_level=False           : one sample per image (original behaviour).
+    """
     print(f"Loading features: {features_path} …")
     npz   = np.load(features_path, allow_pickle=True)
     feats = npz["features"]         # (N, 1536) float16
     paths = npz["image_paths"]      # (N,) str
     print(f"  {len(paths):,} feature vectors  shape={feats.shape}")
 
-    path_to_idx = {p: i for i, p in enumerate(paths)}
+    path_to_feat = {p: feats[i] for i, p in enumerate(paths)}
 
     print(f"Loading dataset:  {dataset_csv} …")
     df = pd.read_csv(dataset_csv)
     df = df.dropna(subset=_DEFECT_COLS + ["vvci"])
 
+    mode = "segment-level" if segment_level else "per-image"
+    print(f"  Aggregation mode: {mode}")
+
     loaders = {}
     for split in ("train", "val", "test"):
         sub = df[df["split"] == split].reset_index(drop=True)
 
-        # Keep only rows whose image_path appears in the features file
-        mask  = sub["image_path"].isin(path_to_idx)
-        sub   = sub[mask].reset_index(drop=True)
-        idxs  = [path_to_idx[p] for p in sub["image_path"]]
-        fvecs = feats[idxs]
+        if segment_level:
+            sf, sv, sg = _aggregate_segments(sub, path_to_feat)
+            ds = SegmentDataset(sf, sv, sg)
+        else:
+            mask  = sub["image_path"].isin(path_to_feat)
+            sub   = sub[mask].reset_index(drop=True)
+            idxs  = [path_to_feat[p] for p in sub["image_path"]]
+            fvecs = np.stack(idxs)
+            ds    = FeatureDataset(fvecs, sub)
 
-        ds = FeatureDataset(fvecs, sub)
         loaders[split] = DataLoader(
             ds,
             batch_size  = batch_size,
@@ -122,7 +183,7 @@ def make_feature_loaders(
             pin_memory  = True,
             drop_last   = (split == "train"),
         )
-        print(f"  {split:5s}: {len(ds):,} samples")
+        print(f"  {split:5s}: {len(ds):,} {'segments' if segment_level else 'images'}")
 
     return loaders
 
@@ -197,14 +258,21 @@ def main():
     parser.add_argument("--num-workers",   type=int,   default=2)
     parser.add_argument("--lr",            type=float, default=1e-3)
     parser.add_argument("--weight-decay",  type=float, default=1e-4)
-    parser.add_argument("--lambda-vvci",   type=float, default=1.0)
-    parser.add_argument("--lambda-defect", type=float, default=0.5)
-    parser.add_argument("--lambda-pci",    type=float, default=0.5)
-    parser.add_argument("--dropout",       type=float, default=0.3)
-    parser.add_argument("--pci-pretrain",  default=None,
+    parser.add_argument("--lambda-vvci",     type=float, default=1.0)
+    parser.add_argument("--lambda-defect",   type=float, default=0.5)
+    parser.add_argument("--lambda-pci",      type=float, default=0.5)
+    parser.add_argument("--lambda-consist",  type=float, default=0.3,
+                        help="Weight for vVCI–formula consistency loss (0 disables it)")
+    parser.add_argument("--dropout",         type=float, default=0.3)
+    parser.add_argument("--pci-pretrain",    default=None,
                         help="Path to pre-trained PCI head weights (pci_head.pt)")
-    parser.add_argument("--device",        default=None)
-    parser.add_argument("--seed",          type=int,   default=42)
+    parser.add_argument("--device",          default=None)
+    parser.add_argument("--seed",            type=int,   default=42)
+    parser.add_argument("--segment-level",   action="store_true",  default=True,
+                        help="Mean-pool image features per 1km segment (default: on)")
+    parser.add_argument("--no-segment-level", dest="segment_level",
+                        action="store_false",
+                        help="Train on individual images instead of segments")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -219,7 +287,8 @@ def main():
 
     # ── Data ──────────────────────────────────────────────────────────────────
     loaders = make_feature_loaders(
-        args.features, args.dataset, args.batch_size, args.num_workers, args.seed
+        args.features, args.dataset, args.batch_size, args.num_workers, args.seed,
+        segment_level=args.segment_level,
     )
 
     # ── Model ─────────────────────────────────────────────────────────────────
@@ -240,11 +309,12 @@ def main():
     from src.training.losses import compute_class_weights
     cw = compute_class_weights(args.dataset, _DEFECT_COLS, n_grades=5, split="train")
     criterion = PavementLoss(
-        lambda_vvci   = args.lambda_vvci,
-        lambda_defect = args.lambda_defect,
-        lambda_pci    = args.lambda_pci,
-        class_weights = cw,
-        huber_delta   = 5.0,
+        lambda_vvci    = args.lambda_vvci,
+        lambda_defect  = args.lambda_defect,
+        lambda_pci     = args.lambda_pci,
+        lambda_consist = args.lambda_consist,
+        class_weights  = cw,
+        huber_delta    = 5.0,
     ).to(device)
 
     optimizer = optim.AdamW(model.parameters(), lr=args.lr,

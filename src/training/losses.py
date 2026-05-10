@@ -3,14 +3,17 @@ losses.py
 ---------
 Combined loss for the multi-task pavement model.
 
-    Total loss = λ_vvci × L_vvci  +  λ_defect × Σ_i L_defect_i
+    Total loss = λ_vvci   × L_vvci
+               + λ_defect × Σ_i L_defect_i
+               + λ_consist × L_consistency
 
-L_vvci   : Huber loss (smooth L1) between predicted and true vVCI.
-           Huber is less sensitive to outlier segments than MSE.
-
-L_defect : Cross-entropy loss for each defect grade (ordinal, but treated
-           as categorical).  Summed (not averaged) across the 6 defects so
-           each defect contributes equally to the gradient regardless of weight.
+L_vvci       : Huber loss between predicted and true vVCI.
+L_defect     : Cross-entropy per defect grade, summed across 6 defects.
+L_consistency: Huber loss between the vVCI head output and the vVCI value
+               computed analytically from the defect head's soft grade
+               predictions.  This enforces that both heads stay in agreement
+               with the MoWT vVCI formula and prevents them from diverging
+               during training.
 
 Defect grade imbalance
 ----------------------
@@ -24,6 +27,12 @@ import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 from pathlib import Path
+
+# vVCI formula weights (MoWT Visual Condition Assessment Manual)
+# Order matches _DEFECT_COLS: all_cracking, wide_cracking, ravelling,
+#                              bleeding, drainage_road, potholes
+_VVCI_WEIGHTS       = torch.tensor([7.0, 10.0, 5.0, 2.5, 2.5, 7.5])
+_VVCI_TOTAL_WEIGHT  = 34.5   # sum of the six visual weights
 
 
 # ---------------------------------------------------------------------------
@@ -73,19 +82,24 @@ class PavementLoss(nn.Module):
 
     def __init__(
         self,
-        lambda_vvci:   float = 1.0,
-        lambda_defect: float = 0.5,
-        lambda_pci:    float = 0.5,
-        class_weights: list | None = None,
-        huber_delta:   float = 5.0,
-        n_defects:     int   = 6,
+        lambda_vvci:    float = 1.0,
+        lambda_defect:  float = 0.5,
+        lambda_pci:     float = 0.5,
+        lambda_consist: float = 0.3,
+        class_weights:  list | None = None,
+        huber_delta:    float = 5.0,
+        n_defects:      int   = 6,
     ):
         super().__init__()
-        self.lambda_vvci   = lambda_vvci
-        self.lambda_defect = lambda_defect
-        self.lambda_pci    = lambda_pci
-        self.huber_delta   = huber_delta
-        self.n_defects     = n_defects
+        self.lambda_vvci    = lambda_vvci
+        self.lambda_defect  = lambda_defect
+        self.lambda_pci     = lambda_pci
+        self.lambda_consist = lambda_consist
+        self.huber_delta    = huber_delta
+        self.n_defects      = n_defects
+
+        # vVCI formula weights registered as a buffer so they move to device
+        self.register_buffer("_vvci_w", _VVCI_WEIGHTS)
 
         # Register class weights as buffers (move to device automatically)
         if class_weights is not None:
@@ -138,16 +152,37 @@ class PavementLoss(nn.Module):
                 delta=self.huber_delta, reduction="mean",
             )
 
+        # ── Consistency loss: vVCI head ↔ analytical vVCI from grades ────
+        # Compute soft expected grades from defect logits, apply the MoWT
+        # vVCI formula, then penalise disagreement with the vVCI head output.
+        # This forces both heads to stay aligned with the known formula.
+        l_consist = torch.tensor(0.0, device=pred_vvci.device)
+        if self.lambda_consist > 0:
+            grade_range = torch.arange(1, 6, dtype=torch.float32,
+                                       device=pred_vvci.device)   # [1..5]
+            soft_grades = torch.stack(
+                [F.softmax(lg, dim=1).mv(grade_range) for lg in pred_logits],
+                dim=1,
+            )  # (B, 6)
+            formula_vvci = (
+                (self._vvci_w * (5.0 - soft_grades) / 4.0).sum(dim=1)
+                / _VVCI_TOTAL_WEIGHT * 100.0
+            )  # (B,)
+            l_consist = F.huber_loss(pred_vvci, formula_vvci,
+                                     delta=self.huber_delta, reduction="mean")
+
         # ── Combined ─────────────────────────────────────────────────────
-        total = (self.lambda_vvci   * l_vvci
-               + self.lambda_defect * l_defect_total
-               + self.lambda_pci    * l_pci)
+        total = (self.lambda_vvci    * l_vvci
+               + self.lambda_defect  * l_defect_total
+               + self.lambda_pci     * l_pci
+               + self.lambda_consist * l_consist)
 
         return {
-            "total":  total,
-            "vvci":   l_vvci,
-            "defect": l_defect_total,
-            "pci":    l_pci,
+            "total":       total,
+            "vvci":        l_vvci,
+            "defect":      l_defect_total,
+            "pci":         l_pci,
+            "consistency": l_consist,
             **defect_losses,
         }
 
