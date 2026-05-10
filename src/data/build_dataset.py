@@ -272,6 +272,7 @@ def build_dataset(
     use_gps_cache:   bool  = True,
     verbose:         bool  = True,
     assign_splits:   bool  = True,
+    gps_workers:     int   = 4,
 ) -> pd.DataFrame:
     """
     Full pipeline: Excel → GPS extraction → matching → CSV.
@@ -326,7 +327,8 @@ def build_dataset(
     # ------------------------------------------------------------------
     if verbose:
         print("Extracting GPS from image headers (OCR) …", flush=True)
-    gps_map = extract_gps_batch(image_paths, use_cache=use_gps_cache, verbose=verbose)
+    gps_map = extract_gps_batch(image_paths, use_cache=use_gps_cache, verbose=verbose,
+                                workers=gps_workers)
 
     # ------------------------------------------------------------------
     # 4. Match images → segments

@@ -159,6 +159,8 @@ def main():
     parser.add_argument("--seed",        type=int,   default=42)
     parser.add_argument("--no-cache",    action="store_true",
                         help="Disable GPS OCR cache (re-OCR every image)")
+    parser.add_argument("--num-workers", type=int, default=4,
+                        help="Parallel OCR workers (default 4; set to nproc for max speed)")
 
     args         = parser.parse_args()
     excel_paths  = [Path(e) for e in args.excels]
@@ -203,6 +205,7 @@ def main():
             seed              = args.seed,
             use_gps_cache     = not args.no_cache,
             assign_splits     = True,
+            gps_workers       = args.num_workers,
         )
 
     # ======================================================================
@@ -251,6 +254,7 @@ def main():
                     use_gps_cache     = not args.no_cache,
                     assign_splits     = False,
                     verbose           = True,
+                    gps_workers       = args.num_workers,
                 )
                 root_dfs.append(df_root)
 

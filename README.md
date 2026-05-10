@@ -9,28 +9,54 @@ Works with both **Mobicap** survey images (ministry) and **smartphone** images (
 
 ```
 vci_estimator/
-├── configs/config.yaml          # all hyperparameters
+├── configs/config.yaml              # all hyperparameters
+├── colab_train.ipynb                # Colab notebook for GPU training
 ├── src/
 │   ├── data/
-│   │   ├── parse_excel.py       # load Mobicap Excel, compute vVCI
-│   │   ├── extract_gps.py       # unified GPS extractor (EXIF + OCR)
-│   │   ├── build_dataset.py     # match images → segments → dataset.csv
-│   │   └── dataset.py           # PyTorch Dataset + DataLoaders
+│   │   ├── parse_excel.py           # load Mobicap Excel, compute vVCI
+│   │   ├── extract_gps.py           # unified GPS extractor (EXIF + OCR)
+│   │   ├── build_dataset.py         # match images → segments → dataset.csv
+│   │   ├── dataset.py               # PyTorch Dataset + DataLoaders
+│   │   └── rdd2022_dataset.py       # RDD2022 dataset for PCI pre-training
 │   ├── models/
-│   │   └── model.py             # EfficientNet-B3 + dual heads
+│   │   ├── model.py                 # EfficientNet-B3 + task heads (+ HeadsModel)
+│   │   └── pci_formula.py           # ASTM D6433 PCI formula from grade predictions
 │   └── training/
-│       ├── losses.py            # Huber vVCI loss + weighted CE per defect
-│       └── trainer.py           # two-stage training loop
+│       ├── losses.py                # Huber vVCI loss + weighted CE per defect
+│       └── trainer.py               # two-stage training loop
 ├── scripts/
-│   ├── prepare_data.py          # STEP 1: build dataset.csv
-│   ├── train_model.py           # STEP 2: train the model
-│   ├── evaluate.py              # STEP 3: evaluate best checkpoint
-│   ├── baseline.py              # image texture baseline comparison
-│   ├── analyse_contributions.py # per-defect contribution analysis
-│   ├── cross_road_eval.py       # cross-road generalisation test
-│   ├── export_model.py          # export to TorchScript + ONNX
-│   └── dataset_report.py        # dataset quality report
-└── outputs/                     # generated files (dataset.csv, checkpoints, plots)
+│   ├── prepare_data.py              # STEP 1: build dataset.csv from images + Excel
+│   ├── extract_features.py          # STEP 2a: extract backbone features for Colab
+│   ├── train_model.py               # STEP 2b: full model training (needs GPU + images)
+│   ├── train_features.py            # STEP 2c: heads-only training on pre-extracted features
+│   ├── pretrain_pci.py              # pre-train PCI head on RDD2022
+│   ├── evaluate.py                  # STEP 3: evaluate best checkpoint on test set
+│   ├── baseline.py                  # image texture baseline comparison
+│   ├── analyse_contributions.py     # per-defect contribution analysis
+│   ├── cross_road_eval.py           # cross-road generalisation test
+│   ├── export_model.py              # export to TorchScript + ONNX
+│   ├── dataset_report.py            # dataset quality report
+│   ├── auto_extract.sh              # auto-runs feature extraction after pipeline
+│   └── prepare_colab_upload.sh      # packages everything for Drive upload
+├── api/                             # FastAPI inference server
+│   ├── main.py
+│   ├── inference.py
+│   ├── image_utils.py
+│   ├── routes/
+│   │   ├── predict.py
+│   │   ├── segments.py
+│   │   └── monitor.py
+│   └── schemas.py
+└── web/                             # browser-based field app
+    ├── index.html
+    ├── css/main.css
+    └── js/
+        ├── api.js
+        ├── field.js
+        ├── batch.js
+        ├── map.js
+        ├── monitor.js
+        └── visualizer.js
 ```
 
 ---
@@ -39,10 +65,11 @@ vci_estimator/
 
 ```bash
 # Python 3.10+ required
-pip install torch torchvision timm pandas numpy Pillow \
-            pytesseract scikit-learn scipy matplotlib seaborn pyyaml
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 
-# tesseract-ocr for Mobicap GPS extraction
+# tesseract-ocr is required for Mobicap GPS extraction
 sudo apt install tesseract-ocr        # Ubuntu/Debian
 brew install tesseract                 # macOS
 ```
@@ -51,41 +78,156 @@ brew install tesseract                 # macOS
 
 ## Data layout
 
+The pipeline expects Excel files and image directories in this structure:
+
 ```
-data/
-  Mobicap_Paved_Network_Combined.xlsx   # from ministry
-  images/
-    jinja/
-      2021_2022/   ← A001_LinkXXPAVEXXXXXX.jpg files
-      2023_2024/
-      2025_2026/
-    hoima/
-      2025_2026/
+Road Condition Data/
+  2021-22/
+    Mobicap Paved Network - Combined  2021-22.xlsx
+  2023-24/
+    Final Data Submitted 2024/
+      Mobicap Paved 2023-2024.xlsx
+  2025-26/
+    Mobicap Paved Network - Combined  2025-26.xlsx
+
+Jinja road/
+  2021-22/    ←  6,973 images
+  2023-24/    ← 42,789 images
+  2025-26/    ← 59,492 images
+
+Hoima road/
+  2021-22/    ← 29,596 images
+  2023-24/    ← 19,308 images
+  2025-26/    ←  9,077 images
 ```
 
-Smartphone images can go in any subfolder — GPS is read from EXIF automatically.
+Total: ~167,000 images across 6 road-year combinations.
 
 ---
 
-## Step 1 — Build dataset
+## Step 1 — Build dataset.csv
+
+### Full multi-year command
 
 ```bash
+source venv/bin/activate
+
 python scripts/prepare_data.py \
-    --excel  data/Mobicap_Paved_Network_Combined.xlsx \
-    --images data/images \
-    --output outputs/dataset.csv
+    --excel  "/path/to/Road Condition Data/2021-22/Mobicap Paved Network - Combined  2021-22.xlsx" \
+    --excel  "/path/to/Road Condition Data/2023-24/Final Data Submitted 2024/Mobicap Paved 2023-2024.xlsx" \
+    --excel  "/path/to/Road Condition Data/2025-26/Mobicap Paved Network - Combined  2025-26.xlsx" \
+    --images "/path/to/Hoima road" \
+    --images "/path/to/Jinja road" \
+    --output outputs/dataset.csv \
+    --num-workers 8
 ```
 
-This will:
-1. Load all 6,051 survey segments from the Excel
-2. Extract GPS from every image (EXIF for smartphones, OCR for Mobicap)
-3. Match each image to its 1km segment using road-code-constrained GPS matching
-4. Compute vVCI labels from the 6 visible defect grades
-5. Assign temporal train/val/test splits per road
+> **`--images` order matters:** List `Hoima road` before `Jinja road` so that
+> Jinja 2025-26 (the largest batch, ~60k images) is processed last. This way
+> all other years are done first if you need to stop early.
+
+> **`--num-workers`:** Set to the number of CPU cores on your machine
+> (`nproc` on Linux). More cores = faster OCR. Default is 4.
+
+### To run in the background and log output
+
+```bash
+nohup python scripts/prepare_data.py \
+    --excel  "/path/to/.../2021-22.xlsx" \
+    --excel  "/path/to/.../2023-2024.xlsx" \
+    --excel  "/path/to/.../2025-26.xlsx" \
+    --images "/path/to/Hoima road" \
+    --images "/path/to/Jinja road" \
+    --output outputs/dataset.csv \
+    --num-workers 8 \
+    >> outputs/prepare_data.log 2>&1 &
+
+echo "Pipeline PID: $!"    # save this to monitor or kill later
+tail -f outputs/prepare_data.log
+```
+
+### What it does (processing order)
+
+| Step | Year | Road | Images | Notes |
+|------|------|------|--------|-------|
+| 1 | 2021-22 | Hoima | 29,596 | GPS via OCR |
+| 2 | 2021-22 | Jinja | 6,973 | GPS via OCR |
+| 3 | 2023-24 | Hoima | 19,308 | GPS via OCR |
+| 4 | 2023-24 | Jinja | 42,789 | GPS via OCR (many fail → link-seq fallback) |
+| 5 | 2025-26 | Hoima | 9,077 | GPS via OCR |
+| 6 | 2025-26 | Jinja | 59,492 | GPS via OCR — **processed last** |
+
+### Speed & output
+
+| | Value |
+|-|-------|
+| Total images | ~167,000 |
+| Fresh run (no cache) | ~8–10 hours with 8 workers |
+| Repeat run (GPS cached) | ~30 minutes (reads `.gps.json` sidecars) |
+| Output | `outputs/dataset.csv` (~2 MB, ~100k labelled image rows) |
+
+**GPS cache:** Each image gets a `.gps.json` sidecar file written next to it on
+first run. If you copy these sidecars alongside the images to another machine,
+the pipeline finishes in ~30 min instead of hours.
 
 ---
 
-## Step 2 — Train
+## Step 2 — Train the model
+
+There are two training paths depending on whether you have a GPU and access to
+the raw images.
+
+### Option A — Colab (recommended, no local GPU needed)
+
+This path extracts backbone features locally (~2 hours on CPU), uploads ~500 MB
+to Google Drive, then trains on a free Colab T4 GPU (~30–45 min).
+
+**1. Extract backbone features locally:**
+```bash
+source venv/bin/activate
+
+python scripts/extract_features.py \
+    --dataset    outputs/dataset.csv \
+    --output     outputs/features.npz \
+    --batch-size 32 \
+    --num-workers 4 \
+    --resume
+```
+
+Output: `outputs/features.npz` (~500 MB, float16 1536-d vectors for every image).
+
+**2. Package project scripts:**
+```bash
+zip -r outputs/vci_estimator_scripts.zip \
+    src/ configs/ \
+    scripts/train_features.py \
+    scripts/pretrain_pci.py \
+    -x "**/__pycache__/*" "**/*.pyc"
+```
+
+**3. Upload to Google Drive:**
+```
+MyDrive/vci_estimator/
+  ├── features.npz              (~500 MB)
+  ├── dataset.csv               (~2 MB)
+  └── vci_estimator_scripts.zip (~small)
+```
+
+**4. Open `colab_train.ipynb` in Google Colab** with a T4 GPU runtime and run
+all cells. The notebook will:
+- Download RDD2022 Japan from FigShare (~3 GB) for PCI head pre-training
+- Pre-train the PCI head on international road damage data
+- Train all three heads (Defect + vVCI + PCI) on Uganda features
+- Save `best.pt` back to Google Drive
+
+**5. Download `best.pt`** from Drive to `outputs/checkpoints/best.pt`.
+
+Or use the automated helper (runs feature extraction + packaging after pipeline):
+```bash
+bash scripts/auto_extract.sh <pipeline_pid>
+```
+
+### Option B — Full local training (requires GPU + raw images)
 
 ```bash
 python scripts/train_model.py \
@@ -93,12 +235,12 @@ python scripts/train_model.py \
     --output-dir  outputs/ \
     --epochs      40 \
     --batch-size  32 \
-    --device      cuda       # or cpu
+    --device      cuda
 ```
 
-Training runs in two stages:
-- **Stage 1** (epochs 0–9): backbone frozen, heads only trained
-- **Stage 2** (epochs 10–39): top 3 EfficientNet blocks unfrozen, lower LR for backbone
+Two-stage training:
+- **Stage 1** (epochs 0–9): backbone frozen, heads only
+- **Stage 2** (epochs 10–39): top 3 EfficientNet-B3 blocks unfrozen, lower backbone LR
 
 Best checkpoint saved to `outputs/checkpoints/best.pt`.
 
@@ -112,19 +254,21 @@ python scripts/evaluate.py \
     --checkpoint outputs/checkpoints/best.pt \
     --dataset    outputs/dataset.csv
 
-# Image texture baseline (compare against CNN)
+# Image texture baseline comparison
 python scripts/baseline.py --dataset outputs/dataset.csv
 
-# Defect contribution analysis
+# Per-defect contribution analysis
 python scripts/analyse_contributions.py \
     --predictions outputs/evaluation/predictions.csv
 
-# Cross-road generalisation (e.g. train on all, test on Hoima)
+# Cross-road generalisation test
 python scripts/cross_road_eval.py \
     --checkpoint    outputs/checkpoints/best.pt \
     --dataset       outputs/dataset.csv \
     --hold-out-road A001
 ```
+
+Works with both full-model and Colab feature-based checkpoints automatically.
 
 ---
 
@@ -143,14 +287,36 @@ Produces:
 
 ---
 
+## Step 5 — Run the API and web app
+
+```bash
+# Start inference API (port 8000)
+uvicorn api.main:app --reload --port 8000
+
+# Serve web app (port 3000)
+cd web && python -m http.server 3000
+# Open http://localhost:3000
+```
+
+API endpoints:
+- `GET  /health` — liveness + model_ready flag
+- `POST /predict` — 1+ images → vvci, pci, defect grades, GPS, road segment
+- `POST /predict-batch` — ZIP of images → per-image CSV results
+- `GET  /nearest-segment?lat=&lon=` — GPS → nearest road segment lookup
+- `GET  /monitor/status` — pipeline and training progress (used by web Monitor tab)
+
+---
+
 ## Model outputs
 
 | Output | Type | Range | Description |
 |--------|------|-------|-------------|
-| `vvci` | float | 0–100 | Visual VCI from image-observable defects |
-| `defect_logits` | 6 × (B,5) | — | Grade logits for each defect (argmax → grade 1–5) |
+| `vvci` | float | 0–100 | Visual VCI (image-observable defects only) |
+| `pci` | float | 0–100 | Pavement Condition Index (ASTM D6433 formula) |
+| `defect_logits` | 6×(B,5) | — | Grade logits per defect (argmax → grade 1–5) |
 
 **Visible defects modelled:**
+
 | # | Defect | VCI weight |
 |---|--------|-----------|
 | 0 | All cracking | 7% |
@@ -160,18 +326,20 @@ Produces:
 | 4 | Drainage on road | 2.5% |
 | 5 | Potholes / Failures | 7.5% |
 
-**Note:** vVCI covers 34.5% of the full VCI formula. Rutting, roughness (IRI), and FWD are excluded as they require instrumented measurement.
+**Note:** vVCI covers 34.5% of the full VCI formula. Rutting, roughness (IRI),
+and structural capacity (FWD) are excluded — they require instrumented measurement
+and are not visible in images.
 
 ---
 
-## GPS sources
+## GPS extraction
 
 | Image source | GPS method |
 |---|---|
 | Smartphone (Android/iOS) | EXIF metadata (automatic) |
-| Mobicap survey system | OCR of blue header text overlay |
+| Mobicap survey vehicle | OCR of blue text header (top 80px of image) |
 
-The system auto-detects the source and applies the correct extraction method.
+The system auto-detects the source per image and applies the correct method.
 
 ---
 
@@ -183,5 +351,3 @@ The system auto-detects the source and applies the correct extraction method.
 | vVCI test RMSE | < 12.0 |
 | Defect grade accuracy (mean) | > 0.65 |
 | Defect within-1 accuracy | > 0.90 |
-
-These will be updated after training on the full dataset.

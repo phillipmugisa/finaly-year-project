@@ -44,16 +44,33 @@ def main():
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     print(f"Device: {device}")
 
-    # Load checkpoint
+    # Load checkpoint — supports full model and feature-based checkpoints
     ckpt = torch.load(args.checkpoint, map_location=device)
     cfg  = ckpt.get("config", {})
-    model = PavementVCIModel(
-        backbone=cfg.get("backbone", "efficientnet_b3"),
-        pretrained=False,
-    ).to(device)
-    model.load_state_dict(ckpt["model"])
-    model.eval()
-    print(f"Loaded checkpoint from epoch {ckpt['epoch']}  (val MAE={ckpt['val_mae']:.2f})")
+
+    if ckpt.get("feature_based"):
+        import timm
+        from src.models.model import HeadsModel
+        model = HeadsModel().to(device)
+        model.load_state_dict(ckpt["model"])
+        model.eval()
+        backbone = timm.create_model(
+            "efficientnet_b3", pretrained=True, num_classes=0, global_pool="avg"
+        ).to(device).eval()
+        for p in backbone.parameters():
+            p.requires_grad_(False)
+        feature_based = True
+        print(f"Loaded feature-based checkpoint from epoch {ckpt['epoch']}  (val MAE={ckpt['val_mae']:.2f})")
+    else:
+        model = PavementVCIModel(
+            backbone=cfg.get("backbone", "efficientnet_b3"),
+            pretrained=False,
+        ).to(device)
+        model.load_state_dict(ckpt["model"])
+        model.eval()
+        backbone = None
+        feature_based = False
+        print(f"Loaded checkpoint from epoch {ckpt['epoch']}  (val MAE={ckpt['val_mae']:.2f})")
 
     # Data
     loaders = make_dataloaders(args.dataset, batch_size=args.batch_size, num_workers=0)
@@ -68,7 +85,11 @@ def main():
     with torch.no_grad():
         for batch in test_loader:
             images = batch["image"].to(device)
-            out    = model(images)
+            if feature_based:
+                feats = backbone(images)
+                out   = model(feats)
+            else:
+                out = model(images)
             all_pred_vvci.append(out["vvci"].cpu())
             all_true_vvci.append(batch["vvci"])
             for i, lg in enumerate(out["defect_logits"]):

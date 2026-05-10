@@ -111,6 +111,15 @@
   box-shadow: 0 2px 6px rgba(0,0,0,0.15);
 }
 
+/* Visualizer sub-tabs */
+.viz-sub-btn.active {
+  background: #1e293b;
+  color: white;
+  border-color: #1e293b;
+}
+
+/* ── Visualizer phase cards ── */
+
 /* Spinner */
 @keyframes spin { to { transform: rotate(360deg); } }
 .animate-spin   { animation: spin 0.8s linear infinite; }

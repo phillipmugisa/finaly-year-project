@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .inference import load_model, is_ready
 from .segments  import load_segments
-from .routes    import predict, segments as seg_routes
+from .routes    import predict, segments as seg_routes, monitor as monitor_routes
 
 _WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -74,8 +74,9 @@ app.add_middleware(
     allow_headers     = ["*"],
 )
 
-app.include_router(predict.router,     tags=["Prediction"])
-app.include_router(seg_routes.router,  tags=["Segments"])
+app.include_router(predict.router,        tags=["Prediction"])
+app.include_router(seg_routes.router,     tags=["Segments"])
+app.include_router(monitor_routes.router, tags=["Monitor"])
 
 
 # ---------------------------------------------------------------------------

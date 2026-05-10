@@ -233,6 +233,33 @@ class PavementVCIModel(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# Heads-only model (for Colab feature-based training)
+# ---------------------------------------------------------------------------
+
+class HeadsModel(nn.Module):
+    """
+    The three task heads without the backbone.
+    Used when training on pre-extracted feature vectors (train_features.py).
+    The backbone is loaded separately (frozen timm EfficientNet-B3) for inference.
+    """
+
+    def __init__(self, feat_dim: int = 1536, n_defects: int = N_DEFECTS,
+                 n_grades: int = N_GRADES, vvci_hidden: int = 256,
+                 pci_hidden: int = 256, dropout: float = 0.3):
+        super().__init__()
+        self.defect_head = DefectHead(feat_dim, n_defects, n_grades, dropout)
+        self.vvci_head   = RegressionHead(feat_dim, vvci_hidden, dropout)
+        self.pci_head    = RegressionHead(feat_dim, pci_hidden,  dropout)
+
+    def forward(self, x: torch.Tensor) -> dict:
+        return {
+            "defect_logits": self.defect_head(x),
+            "vvci":          self.vvci_head(x),
+            "pci":           self.pci_head(x),
+        }
+
+
+# ---------------------------------------------------------------------------
 # Quick test
 # ---------------------------------------------------------------------------
 

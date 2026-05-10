@@ -3,18 +3,20 @@ api/inference.py
 ----------------
 Model loading and inference.
 
-Loads the trained PavementVCIModel checkpoint at server startup.
-Supports multi-image aggregation by averaging backbone feature vectors
-before the heads — more accurate than averaging final predictions.
+Supports two checkpoint formats:
+  1. Full model (PavementVCIModel) — backbone + heads in one checkpoint.
+     Produced by train_model.py (local GPU training).
+  2. Feature-based (HeadsModel) — heads only, backbone loaded from timm.
+     Produced by train_features.py (Colab training on pre-extracted features).
+     Detected by checkpoint key "feature_based": True.
 
 Model search order:
-  1. outputs/checkpoints/best.pt   (full PyTorch checkpoint — preferred)
-  2. outputs/exported/model.torchscript.pt  (TorchScript export)
+  1. outputs/checkpoints/best.pt   (PyTorch checkpoint — preferred)
+  2. outputs/exported/model.torchscript.pt  (TorchScript fallback)
 """
 
 import sys
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torch.nn.functional as F
@@ -30,9 +32,10 @@ _TS_PATH      = _ROOT / "outputs" / "exported"    / "model.torchscript.pt"
 DEFECT_NAMES  = [c.replace("_grade", "") for c in DEFECT_COLS]
 N_DEFECTS     = len(DEFECT_COLS)
 
-_model  = None          # PavementVCIModel (preferred — allows feature averaging)
-_ts_model = None        # TorchScript fallback
-_device = "cpu"
+_model    = None   # PavementVCIModel  OR  HeadsModel
+_backbone = None   # frozen EfficientNet-B3 (only set when _model is HeadsModel)
+_ts_model = None   # TorchScript fallback
+_device   = "cpu"
 
 
 # ---------------------------------------------------------------------------
@@ -42,24 +45,45 @@ _device = "cpu"
 def load_model() -> bool:
     """
     Load model at server startup.  Returns True if a model was found.
-    Tries PyTorch checkpoint first, then TorchScript.
+    Detects feature-based checkpoints automatically.
     """
-    global _model, _ts_model, _device
+    global _model, _backbone, _ts_model, _device
     _device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if _CKPT_PATH.exists():
         try:
-            from src.models.model import PavementVCIModel
-            _model = PavementVCIModel(pretrained=False)
-            ckpt   = torch.load(_CKPT_PATH, map_location=_device)
-            state  = ckpt.get("model_state_dict", ckpt)
-            _model.load_state_dict(state)
-            _model.to(_device).eval()
-            print(f"  Loaded checkpoint: {_CKPT_PATH}")
+            ckpt = torch.load(_CKPT_PATH, map_location=_device)
+
+            if ckpt.get("feature_based"):
+                # ── Colab-trained heads-only checkpoint ──────────────────
+                from src.models.model import HeadsModel
+                import timm
+                _model = HeadsModel().to(_device)
+                _model.load_state_dict(ckpt["model"])
+                _model.eval()
+
+                # Load frozen backbone separately for feature extraction
+                _backbone = timm.create_model(
+                    "efficientnet_b3", pretrained=True,
+                    num_classes=0, global_pool="avg",
+                )
+                _backbone.eval().to(_device)
+                for p in _backbone.parameters():
+                    p.requires_grad_(False)
+                print(f"  Loaded feature-based checkpoint: {_CKPT_PATH}")
+            else:
+                # ── Full model checkpoint ─────────────────────────────────
+                from src.models.model import PavementVCIModel
+                _model = PavementVCIModel(pretrained=False).to(_device)
+                state  = ckpt.get("model_state_dict", ckpt.get("model", ckpt))
+                _model.load_state_dict(state)
+                _model.eval()
+                print(f"  Loaded full checkpoint: {_CKPT_PATH}")
+
             return True
         except Exception as e:
             print(f"  WARNING: checkpoint load failed ({e}), trying TorchScript …")
-            _model = None
+            _model = _backbone = None
 
     if _TS_PATH.exists():
         try:
@@ -116,8 +140,10 @@ def predict(img_tensors: list) -> dict:
 
         # ── Full PyTorch model — feature-level averaging ──────────────────
         if _model is not None:
+            # Feature-based model: extract features via separate frozen backbone
+            bb = _backbone if _backbone is not None else _model.backbone
             feats = torch.cat(
-                [_model.backbone(t) for t in tensors], dim=0
+                [bb(t) for t in tensors], dim=0
             ).mean(dim=0, keepdim=True)              # (1, 1536)
 
             defect_logits = _model.defect_head(feats)  # list of 6 × (1, 5)

@@ -72,7 +72,30 @@
       "Bash(python3 *)",
       "Bash(awk '{print \"PID:\"$2, \"CPU:\"$3\"%\", \"MEM:\"$4\"%\", \"Running:\", $11}')",
       "Bash(awk '{print \"PID:\"$2, \"CPU:\"$3\"%\", \"elapsed:\"$10, $11, $12}')",
-      "Bash(awk '{print $1,$2,$3,$11,$12}')"
+      "Bash(awk '{print $1,$2,$3,$11,$12}')",
+      "Bash(cat)",
+      "Bash(nohup bash outputs/auto_train.sh 9236)",
+      "Bash(kill 9352)",
+      "Bash(nohup bash outputs/auto_train.sh 9238)",
+      "Bash(echo \"New watcher PID: $!\")",
+      "Bash(awk '{print \"PID:\"$2, \"CPU:\"$3, \"MEM:\"$4}')",
+      "Bash(awk '{print \"PID:\"$2, \"CPU:\"$3\"%\", \"Status:\"$8}')",
+      "Bash(awk '{print \"PID:\"$2, \"CPU:\"$3\"%\"}')",
+      "Bash(awk '{print \"PID:\"$2, \"CPU:\"$3\"%\", $11}')",
+      "Bash(awk '{print \"PID:\"$2,\"CPU:\"$3\"%\"}')",
+      "Bash(awk '{print \"PID:\"$2,\"CPU:\"$3\"%\",\"MEM:\"$4\"%\"}')",
+      "Bash(kill 12707 12705 12841 12855 12856 12857 12858)",
+      "Bash(kill 9510)",
+      "Bash(awk '{print \"PID:\"$2, \"CMD:\"$11}')",
+      "Bash(awk '{print \"CPU:\"$3\"%\", \"MEM:\"$4\"%\"}')",
+      "Bash(chmod +x *)",
+      "Bash(awk -F'[:/]' '{print $2}')",
+      "Bash(kill 9238)",
+      "Bash(kill 62829)",
+      "Bash(tesseract --version)",
+      "Bash(kill 255886)",
+      "Bash(kill 255888 255924 255925 256368 256369)",
+      "Bash(git *)"
     ]
   }
 }

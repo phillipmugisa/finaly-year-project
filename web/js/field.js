@@ -15,9 +15,15 @@ function switchTab(tab) {
   document.getElementById(`panel-${tab}`).classList.remove("hidden");
   document.getElementById(`tab-${tab}`).classList.add("active");
   if (tab === "batch") initBatchMap();
-  else initFieldMap();
+  else if (tab !== "monitor") initFieldMap();
   // Stop camera when leaving the field tab
   if (tab !== "field" && typeof stopCamera === "function") stopCamera();
+  // Start/stop monitor polling
+  if (tab === "monitor") { if (typeof initMonitor === "function") initMonitor(); }
+  else { if (typeof stopMonitor === "function") stopMonitor(); }
+  // Init visualizer
+  if (tab === "visualizer") { if (typeof initVisualizer === "function") initVisualizer(); }
+  else { if (typeof stopVizAnimation === "function") stopVizAnimation(); }
 }
 
 // ── Input mode (upload / camera) ─────────────────────────────────────────────
